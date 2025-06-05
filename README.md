@@ -12,4 +12,4 @@ LS Central app files by version.
     "https://github.com/StrongPointLT-ERP/LSC-Apps/raw/refs/heads/main/LS%20Central/25.0/app.zip"
   ]
 5. app.zip contains two app files - "LS Central" and "LS Central System App". Might be updated with Test app in the future.
-6. Non LS dependencies should be stored in a folder like "installApps" in your extension. You can also store LS apps there, but we use this repository so that all extensions which have LS dependencies would use same LS app files when building. And also having one place where to store LS versions saves a disk space on GitHub account.
+6. ~Non LS dependencies should be stored in a folder like "installApps" in your extension.~ You can also store LS apps there, but we use this repository so that all extensions which have LS dependencies would use same LS app files when building. And also having one place where to store LS versions saves a disk space on GitHub account.
