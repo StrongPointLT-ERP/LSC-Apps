@@ -2,7 +2,7 @@
 LS Central app files by version.
 
 1. Repository is needed when StrongPoint or customer extension has dependencies to LS Central in app.json file.
-2. AL-Go build pipeline in your extension will fail if it has LS changes and you don't add LS Central app as dependency.
+2. AL-Go build pipeline in your extension **will fail** if it has LS changes and you don't add LS Central app as dependency.
 3. Select the needed LS version or upload a new one (name the folder as a version and put app.zip). Select LS version by opening app.zip file and copying the **raw link**
 
 ![image](https://github.com/user-attachments/assets/042349a1-97ab-480c-be9a-cefab5e9ea7a)
@@ -13,3 +13,4 @@ LS Central app files by version.
   ]
 5. app.zip contains two app files - "LS Central" and "LS Central System App". Might be updated with Test app in the future.
 6. ~Non LS dependencies should be stored in a folder like "installApps" in your extension.~ You can also store LS apps there, but we use this repository so that all extensions which have LS dependencies would use same LS app files when building. And also having one place where to store LS versions saves a disk space on GitHub account.
+7. When new LS Central version is released, please also upload it to the folder **"latest"**. Last version in **"LS Central"** folder should match the version in **"latest"** folder. Please add the exact version number in commit message when updating latest version, for example: "Update latest to 25.0". This will be used in Test Current, Text NextMinor and Test NextMajor pipelines in AL-Go.
