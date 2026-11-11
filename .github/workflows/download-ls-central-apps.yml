@@ -1,0 +1,176 @@
+# Downloads LS Central .app files from LS Retail's public Update Service and opens a pull request
+# that adds them to this repository: app.zip (LS Central + its LS dependencies) and test_app.zip
+# (LS Central Autotests, matching version). Both zips go into the target folder (default
+# "LS Central/latest") and into a version folder next to it ("LS Central/29.0.5", or
+# "LS Central/28.0" for a .0 release).
+#
+# Runs every night at 01:00 UTC with the defaults below, and on demand from the Actions tab with
+# your own inputs.
+#
+# Needs .github/scripts/Get-LSCentralApps.ps1 in the repository. To open the PR automatically,
+# either "Allow GitHub Actions to create and approve pull requests" must be on (repository or
+# organization Settings > Actions > General), or a fine-grained PAT with Contents + Pull requests
+# read/write must be stored as secret LSAPPS_PR_TOKEN. Without either, the branch is still pushed
+# and the run summary links to "Create pull request".
+
+name: Download LS Central apps
+
+on:
+  schedule:
+    - cron: "0 1 * * *"      # 01:00 UTC every day
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "LS Central version: latest, 28, 28.2 or 28.2.19"
+        required: true
+        default: latest
+      packages:
+        description: "Update Service package ids, comma separated (e.g. ls-central-app)"
+        required: true
+        default: ls-central-app
+      target_folder:
+        description: "Repository folder for app.zip and test_app.zip"
+        required: true
+        default: LS Central/latest
+      include_test_app:
+        description: "Also download LS Central Autotests (matching version) into test_app.zip"
+        type: boolean
+        default: true
+      include_dependencies:
+        description: "Also download LS apps the packages depend on (System App, License Manager, EFT, Telemetry)"
+        type: boolean
+        default: true
+      include_microsoft_apps:
+        description: "Also download Microsoft apps (Base Application makes app.zip over 100 MB - needs Git LFS)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: download-ls-central-apps
+  cancel-in-progress: false
+
+env:
+  # Scheduled runs have no inputs, so every value falls back to the same default as the inputs.
+  IN_VERSION:  ${{ inputs.version       || 'latest' }}
+  IN_PACKAGES: ${{ inputs.packages      || 'ls-central-app' }}
+  IN_FOLDER:   ${{ inputs.target_folder || 'LS Central/latest' }}
+  IN_TESTS:    ${{ github.event_name == 'schedule' && 'true'  || inputs.include_test_app }}
+  IN_DEPS:     ${{ github.event_name == 'schedule' && 'true'  || inputs.include_dependencies }}
+  IN_MS:       ${{ github.event_name == 'schedule' && 'false' || inputs.include_microsoft_apps }}
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download apps
+        id: download
+        shell: pwsh
+        run: |
+          $params = @{
+              Version              = $env:IN_VERSION.Trim()
+              Packages             = $env:IN_PACKAGES
+              TestPackages         = if ($env:IN_TESTS -eq 'true') { 'ls-central-autotests-app' } else { '' }
+              OutputFolder         = $env:IN_FOLDER.Trim()
+              ZipFile              = 'app.zip'
+              TestZipFile          = 'test_app.zip'
+              NoDependencies       = $env:IN_DEPS -ne 'true'
+              IncludeMicrosoftApps = $env:IN_MS -eq 'true'
+          }
+          ./.github/scripts/Get-LSCentralApps.ps1 @params
+
+      - name: Check file sizes
+        shell: pwsh
+        run: |
+          # GitHub rejects files over 100 MB unless they are tracked by Git LFS.
+          $lfs = (Test-Path .gitattributes) -and ((Get-Content .gitattributes -Raw) -match '\.zip\s+filter=lfs')
+          $big = Get-ChildItem -LiteralPath $env:IN_FOLDER.Trim() -Filter *.zip -File | Where-Object Length -gt 100MB
+          if ($big -and -not $lfs) {
+              $big | ForEach-Object { Write-Host "::error::$($_.Name) is $([math]::Round($_.Length / 1MB)) MB, over GitHub's 100 MB limit. Track *.zip with Git LFS or leave the Microsoft apps out." }
+              exit 1
+          }
+
+      - name: Copy to version folder
+        id: versionfolder
+        shell: bash
+        env:
+          VERSION: ${{ steps.download.outputs.version }}
+        run: |
+          set -euo pipefail
+          FOLDER="$(echo "$IN_FOLDER" | xargs)"
+          # Folder name from the LS Central version: 29.0.5 -> 29.0.5, 28.0.0 -> 28.0
+          IFS=. read -r MAJOR MINOR PATCH _ <<< "${VERSION%%-*}"
+          if [ "${PATCH:-0}" = "0" ]; then NAME="$MAJOR.$MINOR"; else NAME="$MAJOR.$MINOR.$PATCH"; fi
+          # Next to the target folder: "LS Central/latest" -> "LS Central/29.0.5"
+          PARENT="$(dirname "$FOLDER")"
+          if [ "$PARENT" = "." ]; then DEST="$NAME"; else DEST="$PARENT/$NAME"; fi
+          mkdir -p "$DEST"
+          cp -f "$FOLDER/app.zip" "$DEST/app.zip"
+          if [ -f "$FOLDER/test_app.zip" ]; then cp -f "$FOLDER/test_app.zip" "$DEST/test_app.zip"; fi
+          echo "Copied to $DEST"
+          echo "dest=$DEST" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request
+        shell: bash
+        env:
+          # The built-in token cannot open PRs when the organization disallows it. Then put a
+          # fine-grained PAT (Contents + Pull requests: read and write) in secret LSAPPS_PR_TOKEN.
+          GH_TOKEN: ${{ secrets.LSAPPS_PR_TOKEN || github.token }}
+          VERSION:  ${{ steps.download.outputs.version }}
+          DEST:     ${{ steps.versionfolder.outputs.dest }}
+          BASE:     ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          FOLDER="$(echo "$IN_FOLDER" | xargs)"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # -f: *.zip may be in .gitignore
+          git add -A -f -- "$FOLDER/app.zip"
+          if [ -f "$FOLDER/test_app.zip" ]; then git add -A -f -- "$FOLDER/test_app.zip"; fi
+          git add -A -f -- "$DEST"
+          if git diff --cached --quiet; then
+            echo "No changes - $BASE already has the LS Central $VERSION apps."
+            echo "No changes - \`$BASE\` already has the LS Central $VERSION apps." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # One branch per version: a nightly run must not open a second PR while the first is
+          # still waiting for review.
+          BRANCH="lscentral-apps/${VERSION}"
+          if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null; then
+            echo "Branch $BRANCH already exists (PR for $VERSION is open or was not merged) - nothing to do."
+            echo "Branch \`$BRANCH\` already exists - the PR for LS Central $VERSION is still open, or its branch was not deleted." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git switch -c "$BRANCH"
+          git commit -m "Update LS Central apps to $VERSION"
+          git push -u origin "$BRANCH"
+
+          TITLE="Update LS Central apps to $VERSION"
+          BODY="LS Central apps $VERSION downloaded from the LS Retail Update Service into \`$FOLDER\` and \`$DEST\` (\`app.zip\`, test app in \`test_app.zip\`) by workflow run [#${GITHUB_RUN_NUMBER}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
+
+          if URL=$(gh pr create --base "$BASE" --head "$BRANCH" --title "$TITLE" --body "$BODY" 2>&1); then
+            echo "Pull request: $URL"
+            echo "Pull request: $URL" >> "$GITHUB_STEP_SUMMARY"
+          else
+            # Branch is pushed - leave a one-click link instead of failing the run.
+            COMPARE="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${BASE}...${BRANCH}?expand=1"
+            echo "::warning::Could not open the pull request ($URL). Branch $BRANCH is pushed - open it here: $COMPARE"
+            {
+              echo "Branch \`$BRANCH\` is pushed, but the pull request could not be opened automatically:"
+              echo ""
+              echo "> $URL"
+              echo ""
+              echo "**[Create the pull request]($COMPARE)** (title: \`$TITLE\`)."
+              echo ""
+              echo "To open PRs automatically, allow GitHub Actions to create pull requests in the organization settings, or add a fine-grained token as secret \`LSAPPS_PR_TOKEN\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
